@@ -1,52 +1,101 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import ApiStatus from "./ApiStatus";
 
-export default function Home() {
-  const [roomFile, setRoomFile] = useState(null);
-  const [roomImage, setRoomImage] = useState(null);
+const STYLES = [
+  "boho",
+  "industrial",
+  "minimalist",
+  "modern",
+  "scandinavian",
+];
 
-  const [targetStyle, setTargetStyle] = useState("Modern");
+export default function Home() {
+  const router = useRouter();
+
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [preview, setPreview] = useState("");
+  const [analysis, setAnalysis] = useState(null);
+
+  const [targetStyle, setTargetStyle] = useState("modern");
   const [prompt, setPrompt] = useState("");
 
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState(null);
-  const [analysisError, setAnalysisError] = useState("");
+  const [generatedImage, setGeneratedImage] = useState("");
+  const [recommendations, setRecommendations] = useState(null);
 
-  function handleImageUpload(event) {
-    const file = event.target.files[0];
+  const [analyzing, setAnalyzing] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [loadingRecommendations, setLoadingRecommendations] =
+    useState(false);
+
+  const [message, setMessage] = useState("");
+  const [savedProjects, setSavedProjects] = useState([]);
+
+  const apiUrl =
+    process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("zylo_saved_projects");
+
+      if (stored) {
+        setSavedProjects(JSON.parse(stored));
+      }
+    } catch (error) {
+      console.error("Could not load saved projects:", error);
+    }
+  }, []);
+
+  async function handleFileChange(event) {
+    const file = event.target.files?.[0];
 
     if (!file) {
       return;
     }
 
-    setRoomFile(file);
+    const allowedTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ];
 
-    const imageURL = URL.createObjectURL(file);
-    setRoomImage(imageURL);
-
-    setAnalysisResult(null);
-    setAnalysisError("");
-  }
-
-  async function analyzeRoom() {
-    if (!roomFile) {
-      setAnalysisError("Please choose a room image first.");
+    if (!allowedTypes.includes(file.type)) {
+      setMessage("Please upload a JPEG, PNG or WEBP image.");
       return;
     }
 
-    setAnalyzing(true);
-    setAnalysisResult(null);
-    setAnalysisError("");
+    if (file.size > 10 * 1024 * 1024) {
+      setMessage("Image must be smaller than 10 MB.");
+      return;
+    }
+
+    setSelectedFile(file);
+    setAnalysis(null);
+    setGeneratedImage("");
+    setRecommendations(null);
+    setMessage("");
+
+    const imageUrl = URL.createObjectURL(file);
+    setPreview(imageUrl);
+  }
+
+  async function analyzeRoom() {
+    if (!selectedFile) {
+      setMessage("Upload a room image first.");
+      return;
+    }
 
     try {
-      const formData = new FormData();
+      setAnalyzing(true);
+      setMessage("");
 
-      formData.append("file", roomFile);
+      const formData = new FormData();
+      formData.append("image", selectedFile);
 
       const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/analyze-room`,
+        `${apiUrl}/api/analyze-room`,
         {
           method: "POST",
           body: formData,
@@ -57,827 +106,956 @@ export default function Home() {
 
       if (!response.ok) {
         throw new Error(
-          data.detail || "ZYLO could not analyze this room."
+          data.detail || "Room analysis failed."
         );
       }
 
-      setAnalysisResult(data);
+      setAnalysis(data);
+
+      if (data.predicted_style) {
+        setTargetStyle(data.predicted_style);
+
+        await fetchRecommendations(
+          data.predicted_style
+        );
+      }
     } catch (error) {
-      setAnalysisError(
-        error.message || "Could not connect to ZYLO AI."
+      setMessage(
+        error.message || "Unable to analyze the room."
       );
     } finally {
       setAnalyzing(false);
     }
   }
 
-  useEffect(() => {
-    return () => {
-      if (roomImage) {
-        URL.revokeObjectURL(roomImage);
-      }
-    };
-  }, [roomImage]);
-
-  function formatBytes(bytes) {
-    if (!bytes) {
-      return "0 Bytes";
-    }
-
-    const sizes = ["Bytes", "KB", "MB", "GB"];
-
-    const index = Math.floor(
-      Math.log(bytes) / Math.log(1024)
-    );
-
-    return `${(
-      bytes / Math.pow(1024, index)
-    ).toFixed(2)} ${sizes[index]}`;
-  }
-
-  function formatStyle(style) {
+  async function fetchRecommendations(style) {
     if (!style) {
-      return "";
+      return;
     }
 
-    return (
-      style.charAt(0).toUpperCase() +
-      style.slice(1)
-    );
+    try {
+      setLoadingRecommendations(true);
+
+      const formData = new FormData();
+      formData.append("style", style);
+
+      const response = await fetch(
+        `${apiUrl}/api/recommendations`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            "Could not load recommendations."
+        );
+      }
+
+      setRecommendations(data);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setLoadingRecommendations(false);
+    }
   }
 
-  const orderedPredictions = analysisResult
-    ? Object.entries(
-        analysisResult.predictions
-      ).sort((a, b) => b[1] - a[1])
-    : [];
+  async function handleStyleChange(event) {
+    const newStyle = event.target.value;
+
+    setTargetStyle(newStyle);
+
+    await fetchRecommendations(newStyle);
+  }
+
+  async function generateRedesign() {
+    if (!selectedFile) {
+      setMessage("Upload a room image first.");
+      return;
+    }
+
+    if (!targetStyle) {
+      setMessage("Choose a target interior style.");
+      return;
+    }
+
+    try {
+      setGenerating(true);
+      setMessage("");
+
+      const formData = new FormData();
+
+      formData.append("image", selectedFile);
+      formData.append("target_style", targetStyle);
+      formData.append("prompt", prompt);
+
+      const response = await fetch(
+        `${apiUrl}/api/redesign-room`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        if (response.status === 402) {
+          throw new Error(
+            "AI redesign credits are currently unavailable. Style analysis and recommendations still work."
+          );
+        }
+
+        throw new Error(
+          data.detail || "AI redesign failed."
+        );
+      }
+
+      setGeneratedImage(data.generated_image || "");
+    } catch (error) {
+      setMessage(
+        error.message ||
+          "Unable to generate the AI redesign."
+      );
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function convertImageToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function saveProject() {
+    if (!selectedFile || !analysis) {
+      setMessage(
+        "Analyze a room before saving the project."
+      );
+      return;
+    }
+
+    try {
+      const originalImage =
+        await convertImageToDataUrl(selectedFile);
+
+      const project = {
+        id: Date.now(),
+        name: `${
+          targetStyle.charAt(0).toUpperCase() +
+          targetStyle.slice(1)
+        } Room Design`,
+        image: originalImage,
+        generatedImage: generatedImage || "",
+        detectedStyle:
+          analysis.predicted_style || "Unknown",
+        confidence: analysis.confidence ?? 0,
+        targetStyle,
+        prompt,
+        recommendations,
+        savedAt: new Date().toLocaleString(),
+      };
+
+      const updatedProjects = [
+        project,
+        ...savedProjects,
+      ];
+
+      localStorage.setItem(
+        "zylo_saved_projects",
+        JSON.stringify(updatedProjects)
+      );
+
+      setSavedProjects(updatedProjects);
+
+      setMessage("Project saved successfully.");
+    } catch (error) {
+      setMessage("Unable to save this project.");
+    }
+  }
+
+  function deleteProject(id) {
+    const updatedProjects = savedProjects.filter(
+      (project) => project.id !== id
+    );
+
+    localStorage.setItem(
+      "zylo_saved_projects",
+      JSON.stringify(updatedProjects)
+    );
+
+    setSavedProjects(updatedProjects);
+  }
+
+  function openProject(id) {
+    router.push(`/project/${id}`);
+  }
 
   return (
     <main className="min-h-screen text-white">
-
-      {/* NAVBAR */}
-
-      <nav className="flex items-center justify-between px-6 py-6 md:px-10">
-
-        <div className="text-2xl font-bold tracking-[0.2em] text-purple-300">
-          ZYLO
-        </div>
-
-        <div className="hidden gap-8 text-sm text-gray-300 md:flex">
-
+      <nav className="sticky top-0 z-40 border-b border-white/10 bg-[#07050d]/85 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <a
             href="#home"
-            className="transition hover:text-purple-300"
+            className="flex items-center gap-3"
           >
-            Home
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-purple-400/30 bg-purple-500/10 text-xl font-black text-purple-200 shadow-lg shadow-purple-900/30">
+              Z
+            </div>
+
+            <div>
+              <div className="text-xl font-black tracking-[0.2em]">
+                ZYLO
+              </div>
+
+              <div className="text-[10px] tracking-[0.16em] text-purple-300">
+                AI INTERIOR DESIGNER
+              </div>
+            </div>
           </a>
+
+          <div className="hidden items-center gap-7 text-sm text-white/60 md:flex">
+            <a
+              href="#home"
+              className="transition hover:text-white"
+            >
+              Home
+            </a>
+
+            <a
+              href="#design"
+              className="transition hover:text-white"
+            >
+              Design
+            </a>
+
+            <a
+              href="#recommendations"
+              className="transition hover:text-white"
+            >
+              Recommendations
+            </a>
+
+            <a
+              href="#features"
+              className="transition hover:text-white"
+            >
+              Features
+            </a>
+
+            <a
+              href="#saved"
+              className="transition hover:text-white"
+            >
+              Saved
+            </a>
+          </div>
 
           <a
             href="#design"
-            className="transition hover:text-purple-300"
+            className="rounded-full bg-gradient-to-r from-purple-600 to-fuchsia-600 px-5 py-2.5 text-sm font-bold shadow-lg shadow-purple-900/30 transition hover:scale-105"
           >
-            Design
+            Start Designing
           </a>
-
-          <a
-            href="#features"
-            className="transition hover:text-purple-300"
-          >
-            Features
-          </a>
-
-          <a
-            href="#saved"
-            className="transition hover:text-purple-300"
-          >
-            Saved
-          </a>
-
         </div>
-
-        <a
-          href="#design"
-          className="rounded-full border border-purple-400 px-5 py-2 text-sm transition hover:bg-purple-500/20"
-        >
-          Get Started
-        </a>
-
       </nav>
-
-
-      {/* HERO */}
 
       <section
         id="home"
-        className="px-6 pb-20 pt-14 md:px-10"
+        className="mx-auto grid min-h-[82vh] max-w-7xl items-center gap-12 px-6 py-20 lg:grid-cols-2"
       >
-
-        <div className="mx-auto grid max-w-7xl items-center gap-12 lg:grid-cols-2">
-
-          {/* LEFT */}
-
-          <div>
-
-            <p className="mb-4 text-sm uppercase tracking-[0.35em] text-purple-300">
-              AI Interior Design Platform
-            </p>
-
-            <h1 className="text-5xl font-bold leading-tight md:text-7xl">
-
-              Design Your
-
-              <span className="block bg-gradient-to-r from-purple-300 via-fuchsia-300 to-yellow-200 bg-clip-text text-transparent">
-                Dream Space
-              </span>
-
-              With AI
-
-            </h1>
-
-            <p className="mt-6 max-w-xl text-lg leading-8 text-gray-300">
-              Upload your room and let ZYLO analyze
-              its interior style using your trained
-              AI model.
-            </p>
-
-            <div className="mt-8 flex flex-wrap gap-4">
-
-              <a
-                href="#design"
-                className="rounded-full bg-purple-600 px-7 py-3 font-semibold transition hover:scale-105 hover:bg-purple-500"
-              >
-                Analyze My Room
-              </a>
-
-              <a
-                href="#features"
-                className="rounded-full border border-white/20 px-7 py-3 font-semibold transition hover:bg-white/10"
-              >
-                Explore Features
-              </a>
-
-            </div>
-
-
-            <div className="mt-10 flex flex-wrap gap-3">
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3">
-                🧠 Style AI
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3">
-                ✨ AI Render
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3">
-                🏠 3D View
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3">
-                🎬 Animate
-              </div>
-
-            </div>
-
+        <div>
+          <div className="inline-flex rounded-full border border-purple-400/20 bg-purple-500/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] text-purple-200">
+            ✦ AI-Powered Interior Intelligence
           </div>
 
+          <h1 className="mt-7 max-w-3xl text-5xl font-black leading-[1.05] sm:text-6xl lg:text-7xl">
+            Design Your
+            <span className="block bg-gradient-to-r from-purple-300 via-fuchsia-300 to-yellow-200 bg-clip-text text-transparent">
+              Dream Space
+            </span>
+            with AI Magic.
+          </h1>
 
-          {/* HERO PREVIEW */}
+          <p className="mt-7 max-w-xl text-lg leading-8 text-white/55">
+            Upload your room, discover its interior
+            style, explore personalized design
+            recommendations and transform your space
+            using AI.
+          </p>
 
-          <div className="relative">
+          <div className="mt-8 flex flex-wrap gap-4">
+            <a
+              href="#design"
+              className="rounded-2xl bg-gradient-to-r from-purple-600 to-fuchsia-600 px-7 py-4 font-bold shadow-xl shadow-purple-900/30 transition hover:-translate-y-1"
+            >
+              ✨ Design My Room
+            </a>
 
-            <div className="absolute -inset-6 rounded-[40px] bg-purple-600/20 blur-3xl"></div>
-
-            <div className="relative overflow-hidden rounded-[32px] border border-white/10 bg-white/5 p-4 backdrop-blur-xl">
-
-              <div className="mb-4 flex items-center justify-between">
-
-                <div>
-
-                  <p className="text-sm text-gray-400">
-                    ZYLO Intelligence
-                  </p>
-
-                  <h3 className="text-xl font-semibold">
-                    Room Style Analysis
-                  </h3>
-
-                </div>
-
-                <span className="rounded-full bg-green-500/10 px-4 py-2 text-sm text-green-300">
-                  AI Connected
-                </span>
-
-              </div>
-
-
-              <div className="relative flex min-h-[360px] items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-[#241337] via-[#11111b] to-[#06060b]">
-
-                {roomImage ? (
-
-                  <img
-                    src={roomImage}
-                    alt="Room preview"
-                    className="absolute inset-0 h-full w-full object-cover"
-                  />
-
-                ) : (
-
-                  <div className="text-center">
-
-                    <div className="text-7xl">
-                      🛋️
-                    </div>
-
-                    <p className="mt-5 text-sm text-gray-400">
-                      Your room analysis will appear here
-                    </p>
-
-                  </div>
-
-                )}
-
-              </div>
-
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-
-                  <p className="text-xs text-gray-400">
-                    AI Style
-                  </p>
-
-                  <p className="mt-1 font-semibold">
-
-                    {analysisResult
-                      ? formatStyle(
-                          analysisResult.predicted_style
-                        )
-                      : "Waiting"}
-
-                  </p>
-
-                </div>
-
-
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-
-                  <p className="text-xs text-gray-400">
-                    Confidence
-                  </p>
-
-                  <p className="mt-1 font-semibold">
-
-                    {analysisResult
-                      ? `${analysisResult.confidence}%`
-                      : "--"}
-
-                  </p>
-
-                </div>
-
-
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-
-                  <p className="text-xs text-gray-400">
-                    AI Model
-                  </p>
-
-                  <p className="mt-1 font-semibold text-green-300">
-                    MobileNetV2
-                  </p>
-
-                </div>
-
-              </div>
-
-            </div>
-
+            <a
+              href="#features"
+              className="rounded-2xl border border-white/10 bg-white/[0.04] px-7 py-4 font-bold text-white/80 transition hover:bg-white/[0.08]"
+            >
+              Explore Features
+            </a>
           </div>
-
         </div>
 
+        <div className="relative">
+          <div className="absolute -inset-8 rounded-full bg-purple-600/20 blur-3xl" />
+
+          <div className="relative overflow-hidden rounded-[36px] border border-purple-400/20 bg-white/[0.04] p-5 shadow-2xl shadow-purple-950/40">
+            <div className="rounded-[28px] border border-white/10 bg-gradient-to-br from-purple-950/80 to-black/80 p-8">
+              <div className="text-sm font-bold uppercase tracking-[0.2em] text-purple-300">
+                ZYLO Workspace
+              </div>
+
+              <div className="mt-5 text-3xl font-black">
+                From room photo to design intelligence.
+              </div>
+
+              <div className="mt-7 grid gap-4 sm:grid-cols-2">
+                <HeroMiniCard
+                  icon="🧠"
+                  title="AI Style Detection"
+                  text="Understand your current interior style."
+                />
+
+                <HeroMiniCard
+                  icon="✨"
+                  title="AI Redesign"
+                  text="Generate a transformed room concept."
+                />
+
+                <HeroMiniCard
+                  icon="🎨"
+                  title="Design Palette"
+                  text="Get colors, materials and décor ideas."
+                />
+
+                <HeroMiniCard
+                  icon="💾"
+                  title="Saved Projects"
+                  text="Return to your designs anytime."
+                />
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
-
-
-      {/* DESIGN STUDIO */}
 
       <section
         id="design"
-        className="px-6 py-24 md:px-10"
+        className="mx-auto max-w-7xl px-6 py-20"
       >
-
-        <div className="mx-auto max-w-7xl">
-
-          <div className="mb-12 text-center">
-
-            <p className="text-sm uppercase tracking-[0.3em] text-purple-300">
-              ZYLO Design Studio
-            </p>
-
-            <h2 className="mt-4 text-4xl font-bold md:text-5xl">
-              Let AI Understand Your Room
-            </h2>
-
-            <p className="mx-auto mt-4 max-w-2xl text-gray-400">
-              Upload a room photo. ZYLO sends the
-              image to FastAPI and your trained
-              MobileNetV2 model predicts its
-              interior style.
-            </p>
-
+        <div className="mb-10">
+          <div className="text-sm font-bold uppercase tracking-[0.18em] text-purple-300">
+            AI Design Studio
           </div>
 
+          <h2 className="mt-3 text-4xl font-black sm:text-5xl">
+            Visualize Your Space
+          </h2>
 
-          <div className="grid gap-8 lg:grid-cols-2">
+          <p className="mt-4 max-w-2xl text-white/50">
+            Start by uploading a room photo. ZYLO will
+            analyze the interior style and prepare design
+            recommendations.
+          </p>
+        </div>
 
-            {/* UPLOAD */}
-
-            <div className="rounded-[32px] border border-white/10 bg-white/5 p-6">
-
-              <p className="mb-4 text-lg font-semibold">
-                1. Upload Your Room
-              </p>
-
-
-              <label className="flex min-h-[420px] cursor-pointer flex-col items-center justify-center overflow-hidden rounded-3xl border-2 border-dashed border-purple-400/30 bg-black/20 transition hover:border-purple-400">
-
-                {roomImage ? (
-
-                  <img
-                    src={roomImage}
-                    alt="Uploaded room"
-                    className="h-full max-h-[420px] w-full object-cover"
-                  />
-
-                ) : (
-
-                  <div className="px-6 text-center">
-
-                    <div className="text-6xl">
-                      🏠
-                    </div>
-
-                    <h3 className="mt-5 text-xl font-semibold">
-                      Upload a room image
-                    </h3>
-
-                    <p className="mt-2 text-sm text-gray-400">
-                      JPG, PNG or WEBP
-                    </p>
-
-                    <div className="mt-6 inline-block rounded-full bg-purple-600 px-6 py-3 font-semibold">
-                      Choose Image
-                    </div>
-
-                  </div>
-
-                )}
-
-
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageUpload}
-                  className="hidden"
-                />
-
-              </label>
-
-
-              {roomFile && (
-
-                <div className="mt-5 rounded-2xl border border-white/10 bg-black/20 p-4">
-
-                  <p className="font-medium text-white">
-                    {roomFile.name}
-                  </p>
-
-                  <p className="mt-1 text-sm text-gray-400">
-                    {formatBytes(roomFile.size)}
-                  </p>
-
+        <div className="grid gap-7 lg:grid-cols-[0.9fr_1.1fr]">
+          <div className="rounded-[32px] border border-white/10 bg-white/[0.04] p-6">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <div className="text-xl font-black">
+                  Upload Room
                 </div>
 
-              )}
-
-
-              <button
-                onClick={analyzeRoom}
-                disabled={!roomFile || analyzing}
-                className={`mt-5 w-full rounded-2xl px-6 py-4 font-semibold transition ${
-                  !roomFile || analyzing
-                    ? "cursor-not-allowed bg-purple-600/30 text-gray-400"
-                    : "bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white hover:scale-[1.01]"
-                }`}
-              >
-
-                {analyzing
-                  ? "ZYLO AI is analyzing..."
-                  : "Analyze Room with AI"}
-
-              </button>
-
-
-              {analysisError && (
-
-                <div className="mt-5 rounded-2xl border border-red-400/20 bg-red-500/10 p-4">
-
-                  <p className="font-semibold text-red-300">
-                    Analysis Failed
-                  </p>
-
-                  <p className="mt-1 text-sm text-red-200">
-                    {analysisError}
-                  </p>
-
+                <div className="mt-1 text-sm text-white/40">
+                  JPEG, PNG or WEBP · Max 10 MB
                 </div>
+              </div>
 
-              )}
-
+              <div className="text-3xl">🏠</div>
             </div>
 
+            <label className="flex min-h-[330px] cursor-pointer flex-col items-center justify-center overflow-hidden rounded-[26px] border border-dashed border-purple-400/30 bg-purple-500/[0.05] transition hover:bg-purple-500/[0.09]">
+              {preview ? (
+                <img
+                  src={preview}
+                  alt="Selected room"
+                  className="h-[330px] w-full object-cover"
+                />
+              ) : (
+                <>
+                  <div className="text-5xl">📷</div>
 
-            {/* AI RESULTS */}
-
-            <div className="rounded-[32px] border border-white/10 bg-white/5 p-6">
-
-              <p className="text-lg font-semibold">
-                2. AI Analysis
-              </p>
-
-
-              {!analysisResult ? (
-
-                <div className="mt-6 flex min-h-[500px] items-center justify-center rounded-3xl border border-white/10 bg-black/20 p-8 text-center">
-
-                  <div>
-
-                    <div className="text-6xl">
-                      🧠
-                    </div>
-
-                    <h3 className="mt-5 text-xl font-semibold">
-                      Waiting for a room
-                    </h3>
-
-                    <p className="mt-2 max-w-sm text-sm leading-6 text-gray-400">
-                      Upload a room image and click
-                      Analyze Room with AI to see
-                      your model&apos;s real prediction.
-                    </p>
-
+                  <div className="mt-5 font-bold">
+                    Click to upload your room
                   </div>
 
-                </div>
+                  <div className="mt-2 text-sm text-white/35">
+                    Choose a clear interior photograph
+                  </div>
+                </>
+              )}
 
-              ) : (
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+            </label>
 
+            <button
+              onClick={analyzeRoom}
+              disabled={!selectedFile || analyzing}
+              className="mt-5 w-full rounded-2xl bg-gradient-to-r from-purple-600 to-fuchsia-600 px-6 py-4 font-black transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {analyzing
+                ? "Analyzing Room..."
+                : "🧠 Analyze My Room"}
+            </button>
+          </div>
+
+          <div className="space-y-6">
+            <div className="rounded-[32px] border border-white/10 bg-white/[0.04] p-7">
+              <div className="text-sm font-bold uppercase tracking-[0.18em] text-purple-300">
+                AI Prediction
+              </div>
+
+              {analysis ? (
                 <div className="mt-6">
+                  <div className="text-sm text-white/40">
+                    Detected Interior Style
+                  </div>
 
-                  {/* MAIN RESULT */}
+                  <div className="mt-2 text-5xl font-black capitalize">
+                    {analysis.predicted_style}
+                  </div>
 
-                  <div className="rounded-3xl border border-purple-400/20 bg-gradient-to-br from-purple-500/20 to-fuchsia-500/5 p-7">
+                  <div className="mt-7 flex items-center gap-4">
+                    <div className="rounded-2xl border border-purple-400/20 bg-purple-500/10 px-5 py-4">
+                      <div className="text-xs uppercase tracking-[0.16em] text-purple-300">
+                        Confidence
+                      </div>
 
-                    <p className="text-sm uppercase tracking-[0.25em] text-purple-300">
-                      Predicted Interior Style
-                    </p>
-
-                    <h3 className="mt-3 text-4xl font-bold text-white">
-                      {formatStyle(
-                        analysisResult.predicted_style
-                      )}
-                    </h3>
-
-                    <div className="mt-5 flex items-end gap-2">
-
-                      <p className="text-5xl font-bold text-purple-200">
-                        {analysisResult.confidence}%
-                      </p>
-
-                      <p className="pb-2 text-sm text-gray-400">
-                        confidence
-                      </p>
-
+                      <div className="mt-1 text-2xl font-black">
+                        {analysis.confidence}%
+                      </div>
                     </div>
 
-                    <div className="mt-6 h-3 overflow-hidden rounded-full bg-black/30">
+                    <div className="max-w-sm text-sm leading-6 text-white/40">
+                      Confidence represents the model&apos;s
+                      confidence for this prediction, not
+                      overall model accuracy.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-8 flex min-h-[160px] items-center justify-center rounded-2xl border border-dashed border-white/10 text-center text-white/30">
+                  Upload and analyze a room to see the AI
+                  prediction.
+                </div>
+              )}
+            </div>
 
+            <div className="rounded-[32px] border border-white/10 bg-white/[0.04] p-7">
+              <div className="text-sm font-bold uppercase tracking-[0.18em] text-purple-300">
+                Redesign Controls
+              </div>
+
+              <label className="mt-6 block text-sm font-semibold text-white/60">
+                Target Interior Style
+              </label>
+
+              <select
+                value={targetStyle}
+                onChange={handleStyleChange}
+                className="mt-2 w-full rounded-2xl border border-white/10 bg-[#110b1d] px-4 py-4 text-white outline-none focus:border-purple-400/50"
+              >
+                {STYLES.map((style) => (
+                  <option
+                    value={style}
+                    key={style}
+                  >
+                    {style
+                      .charAt(0)
+                      .toUpperCase() +
+                      style.slice(1)}
+                  </option>
+                ))}
+              </select>
+
+              <label className="mt-6 block text-sm font-semibold text-white/60">
+                Tell ZYLO what you want
+              </label>
+
+              <textarea
+                value={prompt}
+                onChange={(event) =>
+                  setPrompt(event.target.value)
+                }
+                placeholder="Example: Add a black sofa, warm pendant lights, indoor plants and light wooden furniture."
+                className="mt-2 min-h-[120px] w-full resize-none rounded-2xl border border-white/10 bg-black/20 p-4 text-white outline-none placeholder:text-white/25 focus:border-purple-400/50"
+              />
+
+              <button
+                onClick={generateRedesign}
+                disabled={!selectedFile || generating}
+                className="mt-5 w-full rounded-2xl bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 px-6 py-4 font-black transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {generating
+                  ? "Creating AI Redesign..."
+                  : "✨ Generate AI Redesign"}
+              </button>
+
+              <p className="mt-3 text-xs leading-5 text-white/30">
+                AI redesign generation requires available
+                image-generation credits.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {message && (
+          <div className="mt-7 rounded-2xl border border-purple-400/20 bg-purple-500/10 px-5 py-4 text-sm text-purple-100">
+            {message}
+          </div>
+        )}
+      </section>
+
+      {(preview || generatedImage) && (
+        <section className="mx-auto max-w-7xl px-6 py-20">
+          <div className="mb-8">
+            <div className="text-sm font-bold uppercase tracking-[0.18em] text-purple-300">
+              Visualization
+            </div>
+
+            <h2 className="mt-3 text-4xl font-black">
+              Original vs AI Redesign
+            </h2>
+          </div>
+
+          <div className="grid gap-6 md:grid-cols-2">
+            <ImagePanel
+              title="Original Room"
+              image={preview}
+              emptyText="Upload a room image."
+            />
+
+            <ImagePanel
+              title="AI Redesign"
+              image={generatedImage}
+              emptyText="Your AI-generated redesign will appear here."
+            />
+          </div>
+
+          {analysis && (
+            <button
+              onClick={saveProject}
+              className="mt-7 rounded-2xl border border-purple-300/20 bg-purple-500/10 px-7 py-4 font-black text-purple-100 transition hover:bg-purple-500/20"
+            >
+              💾 Save Project
+            </button>
+          )}
+        </section>
+      )}
+
+      <section
+        id="recommendations"
+        className="mx-auto max-w-7xl px-6 py-20"
+      >
+        <div className="mb-9">
+          <div className="text-sm font-bold uppercase tracking-[0.18em] text-purple-300">
+            ZYLO Design Intelligence
+          </div>
+
+          <h2 className="mt-3 text-4xl font-black">
+            Personalized Recommendations
+          </h2>
+        </div>
+
+        {loadingRecommendations ? (
+          <div className="rounded-[30px] border border-white/10 bg-white/[0.04] p-10 text-center text-white/45">
+            Loading design recommendations...
+          </div>
+        ) : recommendations ? (
+          <div className="space-y-6">
+            <div className="rounded-[30px] border border-purple-400/20 bg-purple-500/[0.07] p-7">
+              <h3 className="text-3xl font-black capitalize">
+                {recommendations.style}
+              </h3>
+
+              <p className="mt-4 max-w-4xl leading-7 text-white/60">
+                {recommendations.description}
+              </p>
+            </div>
+
+            <div className="rounded-[30px] border border-white/10 bg-white/[0.04] p-7">
+              <h3 className="mb-5 text-xl font-black">
+                🎨 Color Palette
+              </h3>
+
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+                {recommendations.palette?.map(
+                  (color) => (
+                    <div
+                      key={color.hex}
+                      className="overflow-hidden rounded-2xl border border-white/10"
+                    >
                       <div
-                        className="h-full rounded-full bg-gradient-to-r from-purple-500 to-fuchsia-400"
+                        className="h-24"
                         style={{
-                          width: `${analysisResult.confidence}%`,
+                          backgroundColor:
+                            color.hex,
                         }}
                       />
 
+                      <div className="p-3">
+                        <div className="font-bold">
+                          {color.name}
+                        </div>
+
+                        <div className="text-xs text-white/40">
+                          {color.hex}
+                        </div>
+                      </div>
                     </div>
-
-                  </div>
-
-
-                  {/* ALL PREDICTIONS */}
-
-                  <div className="mt-6 rounded-3xl border border-white/10 bg-black/20 p-6">
-
-                    <h4 className="font-semibold">
-                      AI Style Scores
-                    </h4>
-
-                    <p className="mt-1 text-sm text-gray-500">
-                      Probability returned by your
-                      trained model for each class.
-                    </p>
-
-
-                    <div className="mt-6 space-y-5">
-
-                      {orderedPredictions.map(
-                        ([styleName, score]) => (
-
-                          <div key={styleName}>
-
-                            <div className="mb-2 flex items-center justify-between">
-
-                              <span className="text-sm font-medium">
-                                {formatStyle(styleName)}
-                              </span>
-
-                              <span className="text-sm text-purple-300">
-                                {score}%
-                              </span>
-
-                            </div>
-
-                            <div className="h-2 overflow-hidden rounded-full bg-white/10">
-
-                              <div
-                                className="h-full rounded-full bg-purple-500"
-                                style={{
-                                  width: `${score}%`,
-                                }}
-                              />
-
-                            </div>
-
-                          </div>
-
-                        )
-                      )}
-
-                    </div>
-
-                  </div>
-
-
-                  <div className="mt-6 rounded-2xl border border-green-400/20 bg-green-500/10 p-5">
-
-                    <p className="font-semibold text-green-300">
-                      ✓ Real ZYLO AI Analysis
-                    </p>
-
-                    <p className="mt-2 text-sm leading-6 text-gray-300">
-                      This result came from your
-                      FastAPI backend and your
-                      trained interior-style model.
-                    </p>
-
-                  </div>
-
-                </div>
-
-              )}
-
+                  )
+                )}
+              </div>
             </div>
 
-          </div>
+            <div className="grid gap-6 md:grid-cols-2">
+              <RecommendationCard
+                title="🛋️ Furniture"
+                items={recommendations.furniture}
+              />
 
+              <RecommendationCard
+                title="💡 Lighting"
+                items={recommendations.lighting}
+              />
 
-          {/* REDESIGN SETTINGS */}
+              <RecommendationCard
+                title="🪨 Materials"
+                items={recommendations.materials}
+              />
 
-          <div className="mt-8 rounded-[32px] border border-white/10 bg-white/5 p-6 md:p-8">
-
-            <div>
-
-              <p className="text-sm uppercase tracking-[0.25em] text-purple-300">
-                Next Stage
-              </p>
-
-              <h3 className="mt-2 text-2xl font-bold">
-                AI Room Redesign
-              </h3>
-
-              <p className="mt-2 text-sm text-gray-400">
-                Choose how you want your room to
-                look. We will connect real image
-                generation in the next stage.
-              </p>
-
+              <RecommendationCard
+                title="🪴 Décor"
+                items={recommendations.decor}
+              />
             </div>
 
-
-            <div className="mt-8 grid gap-6 md:grid-cols-2">
-
-              <div>
-
-                <label className="mb-3 block text-sm text-gray-300">
-                  Target Interior Style
-                </label>
-
-                <select
-                  value={targetStyle}
-                  onChange={(event) =>
-                    setTargetStyle(event.target.value)
-                  }
-                  className="w-full rounded-2xl border border-white/10 bg-[#100b18] px-4 py-4 text-white outline-none focus:border-purple-400"
-                >
-
-                  <option>Modern</option>
-                  <option>Minimalist</option>
-                  <option>Scandinavian</option>
-                  <option>Industrial</option>
-                  <option>Boho</option>
-
-                </select>
-
+            <div className="rounded-[30px] border border-yellow-300/20 bg-yellow-300/[0.05] p-7">
+              <div className="font-bold text-yellow-200">
+                ✦ ZYLO Design Tip
               </div>
 
-
-              <div>
-
-                <label className="mb-3 block text-sm text-gray-300">
-                  Describe Your Dream Room
-                </label>
-
-                <textarea
-                  value={prompt}
-                  onChange={(event) =>
-                    setPrompt(event.target.value)
-                  }
-                  rows="4"
-                  placeholder="Warm lighting, wooden furniture, indoor plants..."
-                  className="w-full resize-none rounded-2xl border border-white/10 bg-[#100b18] px-4 py-4 text-white outline-none placeholder:text-gray-600 focus:border-purple-400"
-                />
-
-              </div>
-
-            </div>
-
-
-            <div className="mt-7 rounded-2xl border border-purple-400/20 bg-purple-500/10 p-5">
-
-              <p className="text-sm text-gray-400">
-                Target redesign
+              <p className="mt-3 leading-7 text-white/70">
+                {recommendations.design_tip}
               </p>
-
-              <p className="mt-1 text-xl font-semibold text-purple-200">
-                {targetStyle}
-              </p>
-
-              {prompt && (
-
-                <p className="mt-3 text-sm leading-6 text-gray-300">
-                  {prompt}
-                </p>
-
-              )}
-
             </div>
-
-
-            <button
-              disabled
-              className="mt-6 w-full cursor-not-allowed rounded-2xl bg-purple-600/30 px-6 py-4 font-semibold text-gray-400"
-            >
-              Generate AI Redesign — Next Stage
-            </button>
-
           </div>
-
-        </div>
-
+        ) : (
+          <div className="rounded-[30px] border border-dashed border-white/10 bg-white/[0.03] p-12 text-center text-white/35">
+            Analyze your room or choose a style to see
+            personalized recommendations.
+          </div>
+        )}
       </section>
-
-
-      {/* FEATURES */}
 
       <section
         id="features"
-        className="px-6 pb-24 md:px-10"
+        className="mx-auto max-w-7xl px-6 py-20"
       >
-
-        <div className="mx-auto max-w-7xl">
-
-          <div className="mb-10 text-center">
-
-            <p className="text-sm uppercase tracking-[0.3em] text-purple-300">
-              ZYLO Platform
-            </p>
-
-            <h2 className="mt-3 text-3xl font-bold md:text-5xl">
-              From understanding to transformation
-            </h2>
-
+        <div className="mb-10 text-center">
+          <div className="text-sm font-bold uppercase tracking-[0.18em] text-purple-300">
+            ZYLO Platform
           </div>
 
-
-          <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-4">
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 transition hover:-translate-y-2">
-
-              <div className="text-3xl">
-                🧠
-              </div>
-
-              <h3 className="mt-4 text-xl font-semibold">
-                Style Detection
-              </h3>
-
-              <p className="mt-2 text-sm leading-6 text-gray-400">
-                Analyze uploaded rooms with your
-                trained MobileNetV2 model.
-              </p>
-
-            </div>
-
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 transition hover:-translate-y-2">
-
-              <div className="text-3xl">
-                ✨
-              </div>
-
-              <h3 className="mt-4 text-xl font-semibold">
-                AI Render
-              </h3>
-
-              <p className="mt-2 text-sm leading-6 text-gray-400">
-                Generate realistic redesign
-                concepts from room photos.
-              </p>
-
-            </div>
-
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 transition hover:-translate-y-2">
-
-              <div className="text-3xl">
-                🏠
-              </div>
-
-              <h3 className="mt-4 text-xl font-semibold">
-                3D View
-              </h3>
-
-              <p className="mt-2 text-sm leading-6 text-gray-400">
-                Explore redesigned spaces using
-                interactive 3D visualization.
-              </p>
-
-            </div>
-
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 transition hover:-translate-y-2">
-
-              <div className="text-3xl">
-                🎬
-              </div>
-
-              <h3 className="mt-4 text-xl font-semibold">
-                Animation
-              </h3>
-
-              <p className="mt-2 text-sm leading-6 text-gray-400">
-                Create visual walkthroughs of
-                interior concepts.
-              </p>
-
-            </div>
-
-          </div>
-
+          <h2 className="mt-3 text-4xl font-black">
+            One Workspace. Multiple AI Tools.
+          </h2>
         </div>
 
+        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+          <FeatureCard
+            icon="🧠"
+            title="Style Detection"
+            description="AI-powered interior style classification using your trained model."
+            status="Working"
+          />
+
+          <FeatureCard
+            icon="✨"
+            title="AI Redesign"
+            description="Transform room images using AI-powered redesign generation."
+            status="Working"
+          />
+
+          <FeatureCard
+            icon="🎨"
+            title="Recommendations"
+            description="Get palettes, furniture, lighting, materials and décor ideas."
+            status="Working"
+          />
+
+          <FeatureCard
+            icon="💾"
+            title="Saved Projects"
+            description="Save room analyses and reopen them from a dedicated project page."
+            status="Working"
+          />
+        </div>
       </section>
 
+      <section
+        id="saved"
+        className="mx-auto max-w-7xl px-6 py-20"
+      >
+        <div className="flex flex-wrap items-end justify-between gap-5">
+          <div>
+            <div className="text-sm font-bold uppercase tracking-[0.18em] text-purple-300">
+              Your Workspace
+            </div>
 
-      {/* FOOTER */}
+            <h2 className="mt-3 text-4xl font-black">
+              Saved Projects
+            </h2>
 
-      <footer className="border-t border-white/10 px-6 py-10 text-center text-sm text-gray-500">
+            <p className="mt-3 text-white/45">
+              Your projects are currently stored in this
+              browser.
+            </p>
+          </div>
 
-        <p className="text-lg font-bold tracking-[0.2em] text-purple-300">
-          ZYLO
-        </p>
+          <div className="rounded-full border border-white/10 bg-white/[0.04] px-5 py-2 text-sm text-white/50">
+            {savedProjects.length}{" "}
+            {savedProjects.length === 1
+              ? "project"
+              : "projects"}
+          </div>
+        </div>
 
-        <p className="mt-2">
-          AI Interior Design & Visualization Platform
-        </p>
+        {savedProjects.length === 0 ? (
+          <div className="mt-8 rounded-[32px] border border-dashed border-white/10 bg-white/[0.03] p-14 text-center">
+            <div className="text-5xl">💜</div>
 
+            <h3 className="mt-5 text-2xl font-black">
+              No saved projects yet
+            </h3>
+
+            <p className="mt-3 text-white/40">
+              Analyze a room and press Save Project to
+              create your first ZYLO project.
+            </p>
+          </div>
+        ) : (
+          <div className="mt-8 grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+            {savedProjects.map((project) => (
+              <div
+                key={project.id}
+                className="overflow-hidden rounded-[30px] border border-white/10 bg-white/[0.04]"
+              >
+                <div className="relative h-56 bg-black/30">
+                  {project.generatedImage ||
+                  project.image ? (
+                    <img
+                      src={
+                        project.generatedImage ||
+                        project.image
+                      }
+                      alt={project.name}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-white/25">
+                      No image
+                    </div>
+                  )}
+
+                  <div className="absolute right-4 top-4 rounded-full border border-white/10 bg-black/70 px-3 py-1 text-xs font-bold capitalize backdrop-blur">
+                    {project.targetStyle}
+                  </div>
+                </div>
+
+                <div className="p-6">
+                  <h3 className="text-xl font-black">
+                    {project.name}
+                  </h3>
+
+                  <div className="mt-2 text-xs text-white/35">
+                    {project.savedAt}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2 text-xs">
+                    <span className="rounded-full border border-purple-400/20 bg-purple-500/10 px-3 py-1.5 text-purple-200">
+                      Detected:{" "}
+                      {project.detectedStyle}
+                    </span>
+
+                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-white/50">
+                      {project.confidence}%
+                    </span>
+                  </div>
+
+                  <div className="mt-6 grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() =>
+                        openProject(project.id)
+                      }
+                      className="rounded-2xl bg-gradient-to-r from-purple-600 to-fuchsia-600 px-4 py-3 text-sm font-black transition hover:scale-[1.02]"
+                    >
+                      Open
+                    </button>
+
+                    <button
+                      onClick={() =>
+                        deleteProject(project.id)
+                      }
+                      className="rounded-2xl border border-red-400/20 bg-red-500/[0.07] px-4 py-3 text-sm font-bold text-red-200 transition hover:bg-red-500/[0.12]"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <footer className="mt-10 border-t border-white/10 px-6 py-10">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-5">
+          <div>
+            <div className="font-black tracking-[0.18em]">
+              ZYLO
+            </div>
+
+            <div className="mt-1 text-sm text-white/30">
+              Design smarter. Live better.
+            </div>
+          </div>
+
+          <div className="text-sm text-white/25">
+            AI Interior Design Platform
+          </div>
+        </div>
       </footer>
 
-
       <ApiStatus />
-
     </main>
+  );
+}
+
+function HeroMiniCard({
+  icon,
+  title,
+  text,
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
+      <div className="text-2xl">{icon}</div>
+
+      <div className="mt-3 font-black">
+        {title}
+      </div>
+
+      <p className="mt-2 text-sm leading-6 text-white/40">
+        {text}
+      </p>
+    </div>
+  );
+}
+
+function ImagePanel({
+  title,
+  image,
+  emptyText,
+}) {
+  return (
+    <div className="overflow-hidden rounded-[30px] border border-white/10 bg-white/[0.04]">
+      <div className="border-b border-white/10 px-5 py-4 font-black">
+        {title}
+      </div>
+
+      {image ? (
+        <img
+          src={image}
+          alt={title}
+          className="h-[420px] w-full object-cover"
+        />
+      ) : (
+        <div className="flex h-[420px] items-center justify-center px-8 text-center text-white/30">
+          {emptyText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecommendationCard({
+  title,
+  items = [],
+}) {
+  return (
+    <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-6">
+      <h3 className="text-xl font-black">
+        {title}
+      </h3>
+
+      <div className="mt-5 space-y-3">
+        {items.map((item, index) => (
+          <div
+            key={`${item}-${index}`}
+            className="rounded-2xl border border-white/[0.07] bg-black/20 px-4 py-3 text-sm leading-6 text-white/65"
+          >
+            ✦ {item}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FeatureCard({
+  icon,
+  title,
+  description,
+  status,
+}) {
+  return (
+    <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-6 transition hover:-translate-y-1 hover:border-purple-400/20">
+      <div className="flex items-start justify-between">
+        <div className="text-3xl">{icon}</div>
+
+        <div className="rounded-full border border-green-400/20 bg-green-500/10 px-3 py-1 text-xs font-bold text-green-300">
+          {status}
+        </div>
+      </div>
+
+      <h3 className="mt-5 text-xl font-black">
+        {title}
+      </h3>
+
+      <p className="mt-3 text-sm leading-6 text-white/45">
+        {description}
+      </p>
+    </div>
   );
 }
