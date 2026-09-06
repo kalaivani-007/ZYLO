@@ -1,0 +1,4 @@
+"use client";
+import Protected from "@/components/Protected";
+function Billing(){return <main className="workspace"><div className="eyebrow">Plans</div><h1>ZYLO pricing</h1><p className="muted">Payments are intentionally not activated until a real provider account is connected and tested. The UI and usage model are ready for integration.</p><div className="two-col"><div className="card"><h3>Free</h3><div className="price">₹0</div><p className="muted">Create homes, organize spaces, style analysis, recommendations and limited design history.</p><button className="btn secondary">Current plan</button></div><div className="card"><h3>Pro</h3><div className="price">₹—</div><p className="muted">AI redesign credits, more saved concepts, advanced exports and future premium visualization.</p><button className="btn" disabled>Activate after payment setup</button></div></div></main>}
+export default function Page(){return <Protected><Billing/></Protected>}
