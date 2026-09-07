@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="ZYLO AI API", version="2.1.0", lifespan=lifespan)
+app = FastAPI(title="ZYLO AI API", version="2.2.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 CLASS_NAMES = ["boho", "industrial", "minimalist", "modern", "scandinavian"]
@@ -92,6 +92,12 @@ SPACE_LIBRARY = {
     "Balcony": {"furniture":["foldable weather-safe chairs","compact bench","vertical plant rack"],"lighting":["warm wall lights","solar accent lights","soft string lights"],"materials":["weather-safe wood composite","outdoor fabric","anti-skid tile"],"decor":["vertical greenery","planters","small outdoor rug"]},
     "Staircase": {"furniture":["under-stair storage","slim console if space permits","wall-mounted shelf"],"lighting":["step lights","wall sconces","landing pendant"],"materials":["wood accents","metal railing","textured wall finish"],"decor":["gallery wall","single statement artwork","indoor plant at landing"]},
     "Bathroom": {"furniture":["floating vanity","mirror cabinet","niche storage"],"lighting":["mirror task light","moisture-safe ceiling light","soft ambient light"],"materials":["anti-skid tile","moisture-safe laminate","stone-look surfaces"],"decor":["minimal bottles","small humidity-safe plant","neutral towels"]},
+    "Dining Room": {"furniture":["correctly scaled dining table","comfortable dining chairs","slim crockery storage"],"lighting":["centered pendant","warm ambient light","buffet accent light"],"materials":["durable wood finish","washable upholstery","easy-clean flooring"],"decor":["simple centerpiece","wall art","textured runner"]},
+    "Study / Office": {"furniture":["ergonomic desk","supportive chair","closed document storage"],"lighting":["glare-free task lamp","neutral ceiling light","indirect shelf light"],"materials":["matte worktop","acoustic textile","light wood"],"decor":["pinboard","small plant","minimal desk accessories"]},
+    "Kids Room": {"furniture":["rounded-edge storage","flexible study desk","accessible toy storage"],"lighting":["soft ceiling light","study task lamp","night light"],"materials":["washable paint","durable laminate","soft rug"],"decor":["display shelf","removable wall graphics","storage baskets"]},
+    "Terrace": {"furniture":["weather-safe lounge seating","compact outdoor table","movable planters"],"lighting":["weather-rated wall lights","path lights","soft ambient strings"],"materials":["outdoor tile","powder-coated metal","UV-resistant fabric"],"decor":["planter groups","shade element","outdoor rug"]},
+    "Entrance / Foyer": {"furniture":["slim shoe storage","small console","wall hooks"],"lighting":["warm ceiling light","mirror accent light","entry wall sconce"],"materials":["durable flooring","wood accent","easy-clean wall finish"],"decor":["mirror","key tray","single plant"]},
+    "Outdoor / Garden": {"furniture":["weather-safe seating","outdoor table","storage bench"],"lighting":["path lighting","wall lighting","plant uplights"],"materials":["outdoor pavers","weather-safe metal","UV-resistant fabric"],"decor":["layered planting","planters","defined pathway"]},
 }
 
 STYLE_COLORS = {
@@ -102,8 +108,52 @@ STYLE_COLORS = {
     "Boho":["Cream","Terracotta","Olive","Natural Rattan"]
 }
 
+
+SPACE_GOALS = {
+    "Living Room": ["Improve conversation seating", "Create a cleaner TV wall", "Add concealed storage"],
+    "Bedroom": ["Improve sleep-friendly lighting", "Increase wardrobe/storage efficiency", "Keep circulation around the bed clear"],
+    "Kitchen": ["Improve counter workflow", "Increase closed storage", "Prioritize easy-clean and heat-safe finishes"],
+    "Dining Room": ["Center the dining zone", "Use comfortable circulation clearance", "Add focused pendant lighting"],
+    "Study / Office": ["Create an ergonomic work zone", "Control screen glare", "Add cable and document storage"],
+    "Kids Room": ["Use flexible storage", "Keep play circulation safe", "Choose durable easy-clean finishes"],
+    "Balcony": ["Use weather-safe furniture", "Add greenery without blocking circulation", "Create soft evening lighting"],
+    "Staircase": ["Improve step safety and lighting", "Use vertical wall space", "Use under-stair volume efficiently"],
+    "Bathroom": ["Improve moisture-safe storage", "Prioritize anti-skid surfaces", "Add strong mirror/task lighting"],
+    "Terrace": ["Create shaded seating", "Use weather-resistant materials", "Plan low-maintenance greenery"],
+    "Entrance / Foyer": ["Create a clear arrival zone", "Add shoe/key storage", "Use one strong visual focal point"],
+    "Outdoor / Garden": ["Define seating and planting zones", "Use outdoor-rated lighting", "Keep pathways clear and durable"],
+}
+
+def make_design_plan(space_type: str, target_style: str, budget: int, keep: str = "", change: str = "", requirements: str = ""):
+    base = SPACE_LIBRARY.get(space_type, SPACE_LIBRARY["Living Room"])
+    budget = max(0, int(budget or 0))
+    keep_items = [x.strip() for x in keep.replace("\n", ",").split(",") if x.strip()]
+    change_items = [x.strip() for x in change.replace("\n", ",").split(",") if x.strip()]
+    goals = SPACE_GOALS.get(space_type, ["Preserve circulation", "Improve storage", "Use practical lighting"])
+    return {
+        "space_type": space_type,
+        "target_style": target_style,
+        "colors": STYLE_COLORS.get(target_style, STYLE_COLORS["Modern"]),
+        "furniture": base["furniture"],
+        "lighting": base["lighting"],
+        "materials": base["materials"],
+        "decor": base["decor"],
+        "keep": keep_items,
+        "change": change_items,
+        "priorities": goals,
+        "requirements": requirements.strip(),
+        "budget_plan": {
+            "furniture": round(budget*.40),
+            "materials": round(budget*.22),
+            "lighting": round(budget*.13),
+            "decor": round(budget*.15),
+            "buffer": round(budget*.10),
+        },
+        "tip": f"For this {space_type.lower()}, preserve the items marked Keep first, then spend on the Change list and the highest-impact {target_style.lower()} upgrades."
+    }
+
 @app.get("/")
-def root(): return {"name":"ZYLO AI API","version":"2.1.0"}
+def root(): return {"name":"ZYLO AI API","version":"2.2.0"}
 
 @app.get("/api/status")
 def status():
@@ -121,9 +171,11 @@ async def analyze_room(file: UploadFile = File(...), space_type: str = Form("Roo
 
 @app.get("/api/recommendations")
 def recommendations(space_type: str = "Living Room", target_style: str = "Modern", budget: int = 25000, user=Depends(require_user)):
-    base = SPACE_LIBRARY.get(space_type, SPACE_LIBRARY["Living Room"])
-    budget = max(0, budget)
-    return {"space_type":space_type,"target_style":target_style,"colors":STYLE_COLORS.get(target_style,STYLE_COLORS["Modern"]),"furniture":base["furniture"],"lighting":base["lighting"],"materials":base["materials"],"decor":base["decor"],"budget_plan":{"furniture":round(budget*.45),"lighting":round(budget*.15),"decor":round(budget*.15),"materials":round(budget*.2),"buffer":round(budget*.05)},"tip":f"Keep the permanent layout of the {space_type.lower()} stable first, then spend the budget on the highest-impact visible changes."}
+    return make_design_plan(space_type, target_style, budget)
+
+@app.post("/api/design-plan")
+def design_plan(space_type: str = Form("Living Room"), target_style: str = Form("Modern"), budget: int = Form(25000), keep: str = Form(""), change: str = Form(""), requirements: str = Form(""), user=Depends(require_user)):
+    return make_design_plan(space_type, target_style, budget, keep, change, requirements)
 
 @app.post("/api/redesign-room")
 async def redesign_room(file: UploadFile = File(...), space_type: str = Form("Room"), target_style: str = Form("Modern"), prompt: str = Form(""), budget: int = Form(25000), user=Depends(require_user)):
