@@ -418,6 +418,107 @@ function SpaceWorkspace({ id }) {
     [analysis]
   );
 
+
+  const smartBudget = useMemo(() => {
+    const total = Math.max(0, Number(budget) || 0);
+
+    const intensityWeights = {
+      "Light Refresh": {
+        furniture: 0.25,
+        materials: 0.15,
+        lighting: 0.20,
+        decor: 0.25,
+        buffer: 0.15,
+      },
+      "Balanced Redesign": {
+        furniture: 0.40,
+        materials: 0.22,
+        lighting: 0.13,
+        decor: 0.15,
+        buffer: 0.10,
+      },
+      "Major Makeover": {
+        furniture: 0.38,
+        materials: 0.30,
+        lighting: 0.12,
+        decor: 0.10,
+        buffer: 0.10,
+      },
+    };
+
+    const weights =
+      intensityWeights[intensity] || intensityWeights["Balanced Redesign"];
+
+    const money = (share) => Math.round(total * share);
+
+    const categories = [
+      {
+        key: "furniture",
+        label: "Furniture",
+        amount: money(weights.furniture),
+        note:
+          intensity === "Light Refresh"
+            ? "Reuse major furniture first; spend only on missing high-impact pieces."
+            : "Prioritize the pieces that most improve function and layout.",
+      },
+      {
+        key: "materials",
+        label: "Materials & finishes",
+        amount: money(weights.materials),
+        note:
+          intensity === "Major Makeover"
+            ? "Allow more for paint, finishes, surfaces and visible material upgrades."
+            : "Focus on paint, textiles and affordable surface improvements.",
+      },
+      {
+        key: "lighting",
+        label: "Lighting",
+        amount: money(weights.lighting),
+        note: "Prioritize useful ambient and task lighting before decorative fixtures.",
+      },
+      {
+        key: "decor",
+        label: "Decor",
+        amount: money(weights.decor),
+        note: "Use decor after the functional priorities are covered.",
+      },
+      {
+        key: "buffer",
+        label: "Contingency buffer",
+        amount: money(weights.buffer),
+        note: "Keep this uncommitted for delivery, installation and unexpected costs.",
+      },
+    ];
+
+    const room = String(space?.type || "Room").toLowerCase();
+    let roomPriority = "Spend first on function, lighting and the changes you explicitly requested.";
+
+    if (room.includes("kitchen")) {
+      roomPriority = "Prioritize storage, task lighting and durable easy-clean finishes before decor.";
+    } else if (room.includes("bed")) {
+      roomPriority = "Prioritize the bed zone, storage and layered lighting before decorative extras.";
+    } else if (room.includes("balcony") || room.includes("terrace") || room.includes("garden") || room.includes("outdoor")) {
+      roomPriority = "Prioritize weather-safe essentials, useful seating and lighting before decorative additions.";
+    } else if (room.includes("bath")) {
+      roomPriority = "Prioritize moisture-safe functional upgrades, storage and lighting before decor.";
+    } else if (room.includes("study") || room.includes("office")) {
+      roomPriority = "Prioritize ergonomics, task lighting and storage before decorative upgrades.";
+    } else if (room.includes("living") || room.includes("hall")) {
+      roomPriority = "Prioritize seating/layout, lighting and the main focal area before small decor.";
+    }
+
+    const tier =
+      total < 15000
+        ? "Essential refresh"
+        : total < 40000
+        ? "Focused upgrade"
+        : total < 100000
+        ? "Full-room redesign"
+        : "Premium redesign";
+
+    return { total, categories, roomPriority, tier };
+  }, [budget, intensity, space?.type]);
+
   const actionBusy = !!busy || optimizing;
 
   return (
@@ -611,6 +712,59 @@ function SpaceWorkspace({ id }) {
           </p>
         </div>
       </div>
+
+
+      <section style={{ marginTop: 22 }} className="card">
+        <div className="workspace-header">
+          <div>
+            <div className="eyebrow">ZYLO Smart Budget Planner</div>
+            <h2>₹{smartBudget.total.toLocaleString()} plan</h2>
+            <p className="muted">
+              {smartBudget.tier} · {intensity} · {space?.type || "Space"}
+            </p>
+          </div>
+          <span className="tag">2.7</span>
+        </div>
+
+        <p className="muted">
+          This is a planning allocation, not a contractor or product quotation.
+          Adjust the total budget above and ZYLO recalculates instantly.
+        </p>
+
+        <div className="grid" style={{ marginTop: 18 }}>
+          {smartBudget.categories.map((item) => {
+            const percent = smartBudget.total
+              ? Math.round((item.amount / smartBudget.total) * 100)
+              : 0;
+
+            return (
+              <div className="card" key={item.key}>
+                <div className="eyebrow">{percent}% of budget</div>
+                <h3>{item.label}</h3>
+                <h2>₹{item.amount.toLocaleString()}</h2>
+                <p className="muted">{item.note}</p>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="divider" />
+        <h3>Spend-first priority</h3>
+        <p className="muted">{smartBudget.roomPriority}</p>
+
+        {keep && (
+          <p className="muted">
+            <strong>Money-saving advantage:</strong> ZYLO will treat your Keep list
+            ({keep}) as items to reuse instead of automatically budgeting to replace them.
+          </p>
+        )}
+
+        {change && (
+          <p className="muted">
+            <strong>Requested-change priority:</strong> {change}
+          </p>
+        )}
+      </section>
 
       {renderPreview && (
         <section style={{ marginTop: 22 }} className="card">
