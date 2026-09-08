@@ -48,6 +48,10 @@ function SpaceWorkspace({ id }) {
   const [error, setError] = useState("");
   const [show3D, setShow3D] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
+  const [intensity, setIntensity] = useState("Balanced Redesign");
+  const [feedback, setFeedback] = useState("");
+  const [variation, setVariation] = useState(1);
+  const [variations, setVariations] = useState([]);
 
   async function load() {
     setError("");
@@ -172,6 +176,9 @@ function SpaceWorkspace({ id }) {
     form.append("keep", keep);
     form.append("change", change);
     form.append("requirements", prompt);
+    form.append("intensity", intensity);
+    form.append("feedback", feedback);
+    form.append("variation", String(variation));
 
     return form;
   }
@@ -266,9 +273,16 @@ function SpaceWorkspace({ id }) {
       });
 
       setGenerated(data.image);
+      setVariations((current) => {
+        const next = [
+          ...current.filter((x) => x.number !== variation),
+          { number: variation, image: data.image },
+        ];
+        return next.sort((a, b) => a.number - b.number);
+      });
 
       setMsg(
-        "AI redesign generated. Compare it with the original, then save it if you like the result."
+        `AI redesign variation ${variation} generated. Compare it with the original, then save it if you like the result.`
       );
     } catch (e) {
       const message = e?.message || "AI redesign failed.";
@@ -506,6 +520,18 @@ function SpaceWorkspace({ id }) {
           </div>
 
           <div className="field">
+            <label>Redesign intensity</label>
+            <select value={intensity} onChange={(e) => setIntensity(e.target.value)}>
+              <option>Light Refresh</option>
+              <option>Balanced Redesign</option>
+              <option>Major Makeover</option>
+            </select>
+            <p className="muted" style={{ marginTop: 8 }}>
+              Light Refresh preserves the most. Major Makeover allows larger movable-furniture and finish changes while still protecting the room structure and Keep list.
+            </p>
+          </div>
+
+          <div className="field">
             <label>Keep</label>
             <textarea
               value={keep}
@@ -530,6 +556,27 @@ function SpaceWorkspace({ id }) {
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="Example: low maintenance, renter-friendly, more plants, no structural changes"
             />
+          </div>
+
+          <div className="field">
+            <label>Feedback for the next variation</label>
+            <textarea
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              placeholder="Example: make the lighting warmer, keep the sofa exactly, remove the large plant"
+            />
+          </div>
+
+          <div className="field">
+            <label>Variation</label>
+            <select value={variation} onChange={(e) => setVariation(Number(e.target.value))}>
+              <option value={1}>Variation 1</option>
+              <option value={2}>Variation 2</option>
+              <option value={3}>Variation 3</option>
+            </select>
+            <p className="muted" style={{ marginTop: 8 }}>
+              ZYLO generates only the variation you request, so it does not automatically spend credits on three images.
+            </p>
           </div>
 
           <div className="actions">
@@ -591,6 +638,9 @@ function SpaceWorkspace({ id }) {
           </div>
 
           <div className="divider" />
+          <p className="muted">
+            Intensity: <strong>{renderPreview.intensity || intensity}</strong> · Variation: <strong>{renderPreview.variation || variation}</strong>
+          </p>
 
           <h3>What ZYLO will preserve and change</h3>
 
@@ -640,6 +690,28 @@ function SpaceWorkspace({ id }) {
             </div>
           </div>
         </div>
+
+        {variations.length > 0 && (
+          <>
+            <div className="divider" />
+            <h3>Generated variations</h3>
+            <div className="actions">
+              {variations.map((v) => (
+                <button
+                  type="button"
+                  key={v.number}
+                  className={generated === v.image ? "btn" : "btn secondary"}
+                  onClick={() => {
+                    setGenerated(v.image);
+                    setVariation(v.number);
+                  }}
+                >
+                  Variation {v.number}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
 
         <div className="actions">
           <button

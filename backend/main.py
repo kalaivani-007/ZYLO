@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="ZYLO AI API", version="2.3.0", lifespan=lifespan)
+app = FastAPI(title="ZYLO AI API", version="2.5.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -473,6 +473,9 @@ def build_redesign_instruction(
     keep: str,
     change: str,
     requirements: str,
+    intensity: str = "Balanced Redesign",
+    feedback: str = "",
+    variation: int = 1,
 ):
     keep_text = clean_text(
         keep,
@@ -488,6 +491,25 @@ def build_redesign_instruction(
     )
 
     budget = max(0, int(budget or 0))
+    intensity = clean_text(intensity, "Balanced Redesign")
+    feedback_text = clean_text(feedback, "No previous-design feedback; follow the main request.")
+    variation = max(1, int(variation or 1))
+
+    intensity_rules = {
+        "Light Refresh": (
+            "Make a restrained refresh. Preserve existing furniture placement and major furnishings. "
+            "Focus on lighting, colors, textiles, decor and small affordable additions."
+        ),
+        "Balanced Redesign": (
+            "Make a balanced redesign. Preserve the room structure and KEEP items, while allowing "
+            "requested furniture, lighting, storage and decor changes."
+        ),
+        "Major Makeover": (
+            "Allow a stronger makeover of movable furnishings, finishes, lighting and decor, but "
+            "still preserve the photographed architecture, viewpoint and every KEEP item."
+        ),
+    }
+    intensity_rule = intensity_rules.get(intensity, intensity_rules["Balanced Redesign"])
 
     return f"""
 Redesign the EXACT uploaded {space_type} photograph as a realistic interior-design concept.
@@ -502,9 +524,12 @@ REQUESTED CHANGES:
 - Improve or replace only these requested elements where practical: {change_text}.
 - Target interior style: {target_style}.
 - User requirements: {requirement_text}.
+- Redesign intensity: {intensity}. {intensity_rule}
 - Approximate budget: INR {budget:,}. Keep the concept visually believable for this budget.
-- Prefer affordable, realistic upgrades when the budget is modest.
+- Prefer affordable, realistic upgrades when the budget is modest. Do not visually imply a luxury renovation when the stated budget is modest.
 - Maintain usable circulation and furniture scale appropriate to the photographed space.
+- Follow-up feedback from the user: {feedback_text}.
+- Variation number: {variation}. Create a distinct but still compliant interpretation; do not violate KEEP instructions just to make the variation different.
 
 VISUAL QUALITY:
 - Photorealistic finished interior.
@@ -548,7 +573,7 @@ def friendly_stability_error(response: requests.Response):
 
 @app.get("/")
 def root():
-    return {"name": "ZYLO AI API", "version": "2.3.0"}
+    return {"name": "ZYLO AI API", "version": "2.5.0"}
 
 
 @app.get("/api/status")
@@ -560,7 +585,7 @@ def status():
         "redesign_ai": "configured" if STABILITY_API_KEY else "not configured",
         "whole_house": "ready",
         "recommendations": "ready",
-        "visual_ai": "2.3",
+        "visual_ai": "2.5",
     }
 
 
@@ -634,6 +659,9 @@ def redesign_preview(
     keep: str = Form(""),
     change: str = Form(""),
     requirements: str = Form(""),
+    intensity: str = Form("Balanced Redesign"),
+    feedback: str = Form(""),
+    variation: int = Form(1),
     user=Depends(require_user),
 ):
     """
@@ -648,6 +676,9 @@ def redesign_preview(
         keep,
         change,
         requirements,
+        intensity,
+        feedback,
+        variation,
     )
 
     return {
@@ -655,6 +686,8 @@ def redesign_preview(
         "space_type": space_type,
         "target_style": target_style,
         "budget": max(0, int(budget or 0)),
+        "intensity": intensity,
+        "variation": max(1, int(variation or 1)),
         "instruction": instruction,
         "generation_ready": bool(STABILITY_API_KEY),
     }
@@ -670,6 +703,9 @@ async def redesign_room(
     requirements: str = Form(""),
     prompt: str = Form(""),
     budget: int = Form(25000),
+    intensity: str = Form("Balanced Redesign"),
+    feedback: str = Form(""),
+    variation: int = Form(1),
     user=Depends(require_user),
 ):
     if not STABILITY_API_KEY:
@@ -693,6 +729,9 @@ async def redesign_room(
         keep,
         change,
         requirements,
+        intensity,
+        feedback,
+        variation,
     )
 
     files = {
@@ -708,7 +747,11 @@ async def redesign_room(
         "model": "sd3.5-large",
         "mode": "image-to-image",
         # A lower value than 2.2 helps preserve more of the uploaded room.
-        "strength": "0.52",
+        "strength": {
+            "Light Refresh": "0.38",
+            "Balanced Redesign": "0.52",
+            "Major Makeover": "0.68",
+        }.get(intensity, "0.52"),
         "output_format": "jpeg",
     }
 
@@ -738,4 +781,6 @@ async def redesign_room(
         "space_type": space_type,
         "budget": max(0, int(budget or 0)),
         "preservation_mode": "strong",
+        "intensity": intensity,
+        "variation": max(1, int(variation or 1)),
     }
