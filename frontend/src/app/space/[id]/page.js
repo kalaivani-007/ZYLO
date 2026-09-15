@@ -958,22 +958,29 @@ function SpaceWorkspace({ id }) {
       )}
 
       <section style={{ marginTop: 22 }} className="card">
-        <h2>5. 3D visualization prototype</h2>
+        <h2>5. View your created design in 3D</h2>
 
         {show3D ? (
-          <Room3D />
+          <Room3D
+            spaceType={space?.type || "Living Room"}
+            targetStyle={target}
+            recommendations={recs}
+            budget={Number(budget) || 0}
+            intensity={intensity}
+            generatedImage={generated}
+          />
         ) : (
           <>
             <p className="muted">
-              The 3D engine stays unloaded until you need it, which
-              keeps this workspace faster.
+              Load a design-driven 3D preview based on this space type,
+              target style, design plan, budget and redesign intensity.
             </p>
 
             <button
               className="btn secondary"
               onClick={() => setShow3D(true)}
             >
-              Load 3D viewer
+              View design in 3D
             </button>
           </>
         )}
