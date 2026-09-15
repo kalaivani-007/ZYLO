@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="ZYLO AI API", version="2.8.0", lifespan=lifespan)
+app = FastAPI(title="ZYLO AI API", version="2.9.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -629,10 +629,25 @@ def require_generation_credit(user_id):
     if int(a.get("balance",0))<1: raise HTTPException(402,"You have no ZYLO generation credits left. Open Plan to add credits.")
     return a
 
-def consume_generation_credit(user_id,a):
-    updated=update_credit_account(user_id,{"balance":max(0,int(a.get("balance",0))-1),"lifetime_used":int(a.get("lifetime_used",0))+1})
-    log_credit_event(user_id,"ai_generation",-1,{"source":"visual_ai"})
-    return updated
+def consume_generation_credit(user_id, _account=None):
+    # 2.9: atomic database transaction prevents concurrent generations from
+    # spending the same last credit. The SQL patch creates this RPC.
+    r = requests.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/zylo_consume_generation_credit",
+        headers=admin_headers(),
+        json={"p_user_id": user_id},
+        timeout=10,
+    )
+    if r.status_code == 409:
+        raise HTTPException(402, "You have no ZYLO generation credits left. Open Plan to add credits.")
+    if r.status_code >= 300:
+        raise HTTPException(503, "Could not safely consume the ZYLO generation credit.")
+    result = r.json()
+    if isinstance(result, list):
+        result = result[0] if result else {}
+    if not result.get("success", False):
+        raise HTTPException(402, "You have no ZYLO generation credits left. Open Plan to add credits.")
+    return {"balance": int(result.get("balance", 0)), "lifetime_used": int(result.get("lifetime_used", 0))}
 
 @app.get("/api/billing")
 def billing_status(user=Depends(require_user)):
@@ -658,15 +673,35 @@ def verify_billing_payment(razorpay_order_id:str=Form(...),razorpay_payment_id:s
         a=ensure_credit_account(user["id"]); return {"success":True,"already_verified":True,"balance":int(a.get("balance",0))}
     expected=hmac.new(RAZORPAY_KEY_SECRET.encode(),f"{razorpay_order_id}|{razorpay_payment_id}".encode(),hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected,razorpay_signature): raise HTTPException(400,"Payment signature verification failed.")
-    credits=int(payment["credits"]); a=ensure_credit_account(user["id"])
-    updated=update_credit_account(user["id"],{"balance":int(a.get("balance",0))+credits,"lifetime_purchased":int(a.get("lifetime_purchased",0))+credits})
-    mark_payment_paid(razorpay_order_id,razorpay_payment_id)
-    log_credit_event(user["id"],"credit_purchase",credits,{"order_id":razorpay_order_id,"payment_id":razorpay_payment_id,"pack_id":payment["pack_id"]})
-    return {"success":True,"credits_added":credits,"balance":int(updated.get("balance",0))}
+    # 2.9: finalize the payment and grant credits in one database transaction.
+    # This makes retries idempotent and removes the grant-before-mark-paid crash window.
+    r = requests.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/zylo_finalize_payment",
+        headers=admin_headers(),
+        json={
+            "p_user_id": user["id"],
+            "p_order_id": razorpay_order_id,
+            "p_payment_id": razorpay_payment_id,
+        },
+        timeout=10,
+    )
+    if r.status_code >= 300:
+        raise HTTPException(503, "Payment was verified, but ZYLO could not safely finalize the credit purchase. Please retry verification; credits will not be duplicated.")
+    result = r.json()
+    if isinstance(result, list):
+        result = result[0] if result else {}
+    if not result.get("success", False):
+        raise HTTPException(400, result.get("message", "Could not finalize payment."))
+    return {
+        "success": True,
+        "already_verified": bool(result.get("already_verified", False)),
+        "credits_added": int(result.get("credits_added", 0)),
+        "balance": int(result.get("balance", 0)),
+    }
 
 @app.get("/")
 def root():
-    return {"name": "ZYLO AI API", "version": "2.8.0"}
+    return {"name": "ZYLO AI API", "version": "2.9.0"}
 
 
 @app.get("/api/status")
@@ -679,7 +714,7 @@ def status():
         "whole_house": "ready",
         "recommendations": "ready",
         "visual_ai": "2.5",
-        "billing": "2.8",
+        "billing": "2.9",
         "payments": "configured" if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET else "test setup pending",
     }
 
