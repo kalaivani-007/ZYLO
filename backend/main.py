@@ -1,4 +1,7 @@
 import base64
+import hashlib
+import hmac
+import time
 import io
 import os
 from pathlib import Path
@@ -19,6 +22,9 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
 MODEL_WEIGHTS_PATH = os.getenv(
     "MODEL_WEIGHTS_PATH",
     "../ai/interior_weights_finetuned.weights.h5",
@@ -36,7 +42,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="ZYLO AI API", version="2.5.0", lifespan=lifespan)
+app = FastAPI(title="ZYLO AI API", version="2.8.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -571,9 +577,96 @@ def friendly_stability_error(response: requests.Response):
     return status, f"AI redesign failed: {raw or 'Unknown image service error'}"
 
 
+
+CREDIT_PACKS = {
+    "starter": {"name": "Starter", "price_inr": 199, "credits": 10},
+    "pro": {"name": "Pro", "price_inr": 499, "credits": 30},
+}
+FREE_STARTER_CREDITS = 3
+
+def admin_headers():
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(503, "Billing database service key is not configured on the backend.")
+    return {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Content-Type": "application/json",
+    }
+
+def ensure_credit_account(user_id: str):
+    r=requests.get(f"{SUPABASE_URL}/rest/v1/user_credits",headers=admin_headers(),params={"user_id":f"eq.{user_id}","select":"*","limit":"1"},timeout=10)
+    if r.status_code>=300: raise HTTPException(503,"Could not read the ZYLO credit account.")
+    rows=r.json()
+    if rows: return rows[0]
+    r=requests.post(f"{SUPABASE_URL}/rest/v1/user_credits",headers={**admin_headers(),"Prefer":"return=representation"},json={"user_id":user_id,"balance":FREE_STARTER_CREDITS,"lifetime_purchased":0,"lifetime_used":0},timeout=10)
+    if r.status_code>=300: raise HTTPException(503,"Could not create the ZYLO credit account.")
+    return r.json()[0]
+
+def update_credit_account(user_id: str,payload: dict):
+    r=requests.patch(f"{SUPABASE_URL}/rest/v1/user_credits",headers={**admin_headers(),"Prefer":"return=representation"},params={"user_id":f"eq.{user_id}"},json=payload,timeout=10)
+    if r.status_code>=300: raise HTTPException(503,"Could not update the ZYLO credit account.")
+    return r.json()[0]
+
+def log_credit_event(user_id,event_type,units,metadata=None):
+    r=requests.post(f"{SUPABASE_URL}/rest/v1/usage_events",headers=admin_headers(),json={"user_id":user_id,"event_type":event_type,"units":units,"metadata":metadata or {}},timeout=10)
+    if r.status_code>=300: raise HTTPException(503,"Could not record the ZYLO credit event.")
+
+def create_payment_record(user_id,order_id,pack_id):
+    p=CREDIT_PACKS[pack_id]
+    r=requests.post(f"{SUPABASE_URL}/rest/v1/payment_orders",headers=admin_headers(),json={"user_id":user_id,"razorpay_order_id":order_id,"pack_id":pack_id,"amount_inr":p["price_inr"],"credits":p["credits"],"status":"created"},timeout=10)
+    if r.status_code>=300: raise HTTPException(503,"Could not save the payment order.")
+
+def get_payment_record(user_id,order_id):
+    r=requests.get(f"{SUPABASE_URL}/rest/v1/payment_orders",headers=admin_headers(),params={"user_id":f"eq.{user_id}","razorpay_order_id":f"eq.{order_id}","select":"*","limit":"1"},timeout=10)
+    if r.status_code>=300: raise HTTPException(503,"Could not verify the payment order.")
+    rows=r.json(); return rows[0] if rows else None
+
+def mark_payment_paid(order_id,payment_id):
+    r=requests.patch(f"{SUPABASE_URL}/rest/v1/payment_orders",headers=admin_headers(),params={"razorpay_order_id":f"eq.{order_id}"},json={"status":"paid","razorpay_payment_id":payment_id},timeout=10)
+    if r.status_code>=300: raise HTTPException(503,"Could not finalize the payment record.")
+
+def require_generation_credit(user_id):
+    a=ensure_credit_account(user_id)
+    if int(a.get("balance",0))<1: raise HTTPException(402,"You have no ZYLO generation credits left. Open Plan to add credits.")
+    return a
+
+def consume_generation_credit(user_id,a):
+    updated=update_credit_account(user_id,{"balance":max(0,int(a.get("balance",0))-1),"lifetime_used":int(a.get("lifetime_used",0))+1})
+    log_credit_event(user_id,"ai_generation",-1,{"source":"visual_ai"})
+    return updated
+
+@app.get("/api/billing")
+def billing_status(user=Depends(require_user)):
+    a=ensure_credit_account(user["id"])
+    return {"success":True,"balance":int(a.get("balance",0)),"lifetime_purchased":int(a.get("lifetime_purchased",0)),"lifetime_used":int(a.get("lifetime_used",0)),"free_starting_credits":FREE_STARTER_CREDITS,"packs":CREDIT_PACKS,"payments_ready":bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET)}
+
+@app.post("/api/billing/create-order")
+def create_billing_order(pack_id: str=Form(...),user=Depends(require_user)):
+    if pack_id not in CREDIT_PACKS: raise HTTPException(400,"Unknown ZYLO credit pack.")
+    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET: raise HTTPException(503,"Razorpay test keys are not configured yet. No payment was created.")
+    p=CREDIT_PACKS[pack_id]
+    r=requests.post("https://api.razorpay.com/v1/orders",auth=(RAZORPAY_KEY_ID,RAZORPAY_KEY_SECRET),json={"amount":p["price_inr"]*100,"currency":"INR","receipt":f"zylo_{user['id'][:8]}_{int(time.time())}","notes":{"zylo_user_id":user["id"],"pack_id":pack_id}},timeout=20)
+    if r.status_code>=300: raise HTTPException(502,"Razorpay could not create the payment order.")
+    order=r.json(); create_payment_record(user["id"],order["id"],pack_id)
+    return {"success":True,"key_id":RAZORPAY_KEY_ID,"order_id":order["id"],"amount":order["amount"],"currency":order["currency"],"pack":p}
+
+@app.post("/api/billing/verify")
+def verify_billing_payment(razorpay_order_id:str=Form(...),razorpay_payment_id:str=Form(...),razorpay_signature:str=Form(...),user=Depends(require_user)):
+    if not RAZORPAY_KEY_SECRET: raise HTTPException(503,"Razorpay is not configured.")
+    payment=get_payment_record(user["id"],razorpay_order_id)
+    if not payment: raise HTTPException(404,"ZYLO payment order not found.")
+    if payment.get("status")=="paid":
+        a=ensure_credit_account(user["id"]); return {"success":True,"already_verified":True,"balance":int(a.get("balance",0))}
+    expected=hmac.new(RAZORPAY_KEY_SECRET.encode(),f"{razorpay_order_id}|{razorpay_payment_id}".encode(),hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected,razorpay_signature): raise HTTPException(400,"Payment signature verification failed.")
+    credits=int(payment["credits"]); a=ensure_credit_account(user["id"])
+    updated=update_credit_account(user["id"],{"balance":int(a.get("balance",0))+credits,"lifetime_purchased":int(a.get("lifetime_purchased",0))+credits})
+    mark_payment_paid(razorpay_order_id,razorpay_payment_id)
+    log_credit_event(user["id"],"credit_purchase",credits,{"order_id":razorpay_order_id,"payment_id":razorpay_payment_id,"pack_id":payment["pack_id"]})
+    return {"success":True,"credits_added":credits,"balance":int(updated.get("balance",0))}
+
 @app.get("/")
 def root():
-    return {"name": "ZYLO AI API", "version": "2.5.0"}
+    return {"name": "ZYLO AI API", "version": "2.8.0"}
 
 
 @app.get("/api/status")
@@ -586,6 +679,8 @@ def status():
         "whole_house": "ready",
         "recommendations": "ready",
         "visual_ai": "2.5",
+        "billing": "2.8",
+        "payments": "configured" if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET else "test setup pending",
     }
 
 
@@ -714,6 +809,8 @@ async def redesign_room(
             "Stability AI is not configured. You can still build and preview the design plan.",
         )
 
+    credit_account = await to_thread.run_sync(lambda: require_generation_credit(user["id"]))
+
     content = await file.read()
     validate_uploaded_image(content)
 
@@ -773,6 +870,7 @@ async def redesign_room(
         raise HTTPException(status_code, message)
 
     encoded = base64.b64encode(response.content).decode("ascii")
+    updated_credit_account = await to_thread.run_sync(lambda: consume_generation_credit(user["id"], credit_account))
 
     return {
         "success": True,
@@ -783,4 +881,5 @@ async def redesign_room(
         "preservation_mode": "strong",
         "intensity": intensity,
         "variation": max(1, int(variation or 1)),
+        "credits_remaining": int(updated_credit_account.get("balance", 0)),
     }
