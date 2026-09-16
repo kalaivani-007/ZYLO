@@ -880,7 +880,7 @@ async def redesign_room(
 
     data = {
         "prompt": instruction,
-        "model": "sd3.5-large",
+        "model": "sd3.5-large-turbo",
         "mode": "image-to-image",
         # A lower value than 2.2 helps preserve more of the uploaded room.
         "strength": {
