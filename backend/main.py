@@ -37,10 +37,9 @@ _model_error = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Warm the TensorFlow model once so the first request is faster.
-    await to_thread.run_sync(get_model)
+    # Start the API immediately.
+    # The TensorFlow model will load only when an AI analysis needs it.
     yield
-
 
 app = FastAPI(title="ZYLO AI API", version="2.9.0", lifespan=lifespan)
 
