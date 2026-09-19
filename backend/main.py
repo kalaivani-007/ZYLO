@@ -706,12 +706,11 @@ def verify_billing_payment(razorpay_order_id:str=Form(...),razorpay_payment_id:s
 def root():
     return {"name": "ZYLO AI API", "version": "2.9.0"}
 
-
 @app.get("/api/status")
 def status():
     return {
         "status": "online",
-        "style_model": "ready" if get_model() is not None else "missing",
+        "style_model": "ready" if _model is not None else ("error" if _model_error else "cold"),
         "model_error": _model_error,
         "redesign_ai": "configured" if STABILITY_API_KEY else "not configured",
         "whole_house": "ready",
@@ -720,7 +719,6 @@ def status():
         "billing": "2.9",
         "payments": "configured" if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET else "test setup pending",
     }
-
 
 @app.post("/api/analyze-room")
 async def analyze_room(
