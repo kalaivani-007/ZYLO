@@ -119,6 +119,21 @@ function SpaceWorkspace({ id }) {
     [preview]
   );
 
+  function openSavedDesign(design) {
+    if (preview?.startsWith("blob:")) URL.revokeObjectURL(preview);
+    setPreview(design.image_url || "");
+    setGenerated(design.generated_url || "");
+    setTarget(design.target_style || "Modern");
+    setBudget(Number(design.budget_inr || 25000));
+    setFile(null);
+    setAnalysis(null);
+    setRenderPreview(null);
+    setShow3D(false);
+    setError("");
+    setMsg("Saved design opened from Design History.");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   async function chooseFile(e) {
     const selected = e.target.files?.[0];
     if (!selected) return;
@@ -980,7 +995,7 @@ async function analyze() {
 
         <div className="grid">
           {designs.map((d) => (
-            <div className="card" key={d.id}>
+            <div className="card" key={d.id} onClick={() => openSavedDesign(d)} style={{ cursor: "pointer" }}>
               <div
                 className="image-box"
                 style={{ minHeight: 180 }}
