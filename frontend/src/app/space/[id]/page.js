@@ -183,46 +183,35 @@ function SpaceWorkspace({ id }) {
     return form;
   }
 
-  async function analyze() {
-    if (!file) {
-      setError("Choose a room photo first.");
-      return;
-    }
-
-    setBusy("Building your design plan…");
-    setError("");
-    setMsg("");
-
-    try {
-      const analysisForm = new FormData();
-      analysisForm.append("file", file);
-      analysisForm.append("space_type", space?.type || "Room");
-
-      const planForm = buildStructuredForm(false);
-
-      const [data, plan] = await Promise.all([
-        apiFetch("/api/analyze-room", {
-          method: "POST",
-          body: analysisForm,
-        }),
-        apiFetch("/api/design-plan", {
-          method: "POST",
-          body: planForm,
-        }),
-      ]);
-
-      setAnalysis(data);
-      setRecs(plan);
-
-      setMsg(
-        "ZYLO analyzed the space and prepared a practical plan around your Keep, Change and budget choices."
-      );
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy("");
-    }
+async function analyze() {
+  if (!file) {
+    setError("Choose a room photo first.");
+    return;
   }
+
+  setBusy("Building your design plan...");
+  setError("");
+  setMsg("");
+
+  try {
+    const planForm = buildStructuredForm(false);
+
+    const plan = await apiFetch("/api/design-plan", {
+      method: "POST",
+      body: planForm,
+    });
+
+    setRecs(plan);
+
+    setMsg(
+      "ZYLO prepared a practical design plan around your Keep, Change and budget choices."
+    );
+  } catch (e) {
+    setError(e.message);
+  } finally {
+    setBusy("");
+  }
+}
 
   async function previewVisualPlan() {
     if (!file) {
