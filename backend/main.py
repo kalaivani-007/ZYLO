@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 
 from anyio import to_thread
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
@@ -25,6 +25,7 @@ STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
 MODEL_WEIGHTS_PATH = os.getenv(
     "MODEL_WEIGHTS_PATH",
     "../ai/interior_weights_finetuned.weights.h5",
@@ -666,6 +667,94 @@ def create_billing_order(pack_id: str=Form(...),user=Depends(require_user)):
     if r.status_code>=300: raise HTTPException(502,"Razorpay could not create the payment order.")
     order=r.json(); create_payment_record(user["id"],order["id"],pack_id)
     return {"success":True,"key_id":RAZORPAY_KEY_ID,"order_id":order["id"],"amount":order["amount"],"currency":order["currency"],"pack":p}
+
+@app.post("/api/billing/razorpay-webhook")
+async def razorpay_webhook(request: Request):
+    if not RAZORPAY_WEBHOOK_SECRET:
+        raise HTTPException(503, "Razorpay webhook is not configured.")
+
+    body = await request.body()
+    signature = request.headers.get("x-razorpay-signature", "")
+
+    expected = hmac.new(
+        RAZORPAY_WEBHOOK_SECRET.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not signature or not hmac.compare_digest(expected, signature):
+        raise HTTPException(400, "Invalid Razorpay webhook signature.")
+
+    payload = await request.json()
+    event = payload.get("event", "")
+
+    if event not in ("payment.captured", "order.paid"):
+        return {"success": True, "ignored": True}
+
+    payment_entity = (
+        payload.get("payload", {})
+        .get("payment", {})
+        .get("entity", {})
+    )
+
+    order_entity = (
+        payload.get("payload", {})
+        .get("order", {})
+        .get("entity", {})
+    )
+
+    order_id = payment_entity.get("order_id") or order_entity.get("id")
+    payment_id = payment_entity.get("id")
+
+    if not order_id or not payment_id:
+        return {"success": True, "ignored": True}
+
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/payment_orders",
+        headers=admin_headers(),
+        params={
+            "razorpay_order_id": f"eq.{order_id}",
+            "select": "*",
+            "limit": "1",
+        },
+        timeout=10,
+    )
+
+    if r.status_code >= 300:
+        raise HTTPException(503, "Could not read ZYLO payment order.")
+
+    rows = r.json()
+
+    if not rows:
+        return {"success": True, "ignored": True}
+
+    payment = rows[0]
+
+    finalize = requests.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/zylo_finalize_payment",
+        headers=admin_headers(),
+        json={
+            "p_user_id": payment["user_id"],
+            "p_order_id": order_id,
+            "p_payment_id": payment_id,
+        },
+        timeout=10,
+    )
+
+    if finalize.status_code >= 300:
+        raise HTTPException(503, "Could not finalize ZYLO payment.")
+
+    result = finalize.json()
+    if isinstance(result, list):
+        result = result[0] if result else {}
+
+    if not result.get("success", False):
+        raise HTTPException(
+            400,
+            result.get("message", "Could not finalize payment.")
+        )
+
+    return {"success": True}
 
 @app.post("/api/billing/verify")
 def verify_billing_payment(razorpay_order_id:str=Form(...),razorpay_payment_id:str=Form(...),razorpay_signature:str=Form(...),user=Depends(require_user)):
