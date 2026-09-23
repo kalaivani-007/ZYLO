@@ -29,6 +29,26 @@ const styles = [
   "Boho",
 ];
 
+const AI_REQUEST_TIMEOUT_MS = 90_000;
+
+function withTimeout(request, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
+  let timeoutId;
+
+  const timeout = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      reject(
+        new Error(
+          "ZYLO's AI server did not respond within 90 seconds. The free server may still be waking up. Please retry."
+        )
+      );
+    }, timeoutMs);
+  });
+
+  return Promise.race([request, timeout]).finally(() => {
+    window.clearTimeout(timeoutId);
+  });
+}
+
 function SpaceWorkspace({ id }) {
   const [space, setSpace] = useState(null);
   const [designs, setDesigns] = useState([]);
@@ -52,6 +72,10 @@ function SpaceWorkspace({ id }) {
   const [feedback, setFeedback] = useState("");
   const [variation, setVariation] = useState(1);
   const [variations, setVariations] = useState([]);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [loadingSeconds, setLoadingSeconds] = useState(0);
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  const [retryAction, setRetryAction] = useState("");
 
   async function load() {
     setError("");
@@ -118,6 +142,27 @@ function SpaceWorkspace({ id }) {
     },
     [preview]
   );
+
+  useEffect(() => {
+    if (!aiLoading) {
+      setLoadingSeconds(0);
+      setLoadingProgress(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+
+    const updateProgress = () => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      setLoadingSeconds(elapsed);
+      setLoadingProgress(Math.min(95, Math.max(3, Math.round((elapsed / 90) * 100))));
+    };
+
+    updateProgress();
+    const intervalId = window.setInterval(updateProgress, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [aiLoading]);
 
   function openSavedDesign(design) {
     if (preview?.startsWith("blob:")) URL.revokeObjectURL(preview);
@@ -205,16 +250,20 @@ async function analyze() {
   }
 
   setBusy("Building your design plan...");
+  setAiLoading(true);
+  setRetryAction("");
   setError("");
   setMsg("");
 
   try {
     const planForm = buildStructuredForm(false);
 
-    const plan = await apiFetch("/api/design-plan", {
-      method: "POST",
-      body: planForm,
-    });
+    const plan = await withTimeout(
+      apiFetch("/api/design-plan", {
+        method: "POST",
+        body: planForm,
+      })
+    );
 
     setRecs(plan);
 
@@ -222,8 +271,10 @@ async function analyze() {
       "ZYLO prepared a practical design plan around your Keep, Change and budget choices."
     );
   } catch (e) {
-    setError(e.message);
+    setError(e?.message || "ZYLO could not build the design plan. Please retry.");
+    setRetryAction("analyze");
   } finally {
+    setAiLoading(false);
     setBusy("");
   }
 }
@@ -235,16 +286,20 @@ async function analyze() {
     }
 
     setBusy("Checking visual redesign instructions…");
+    setAiLoading(true);
+    setRetryAction("");
     setError("");
     setMsg("");
 
     try {
       const form = buildStructuredForm(false);
 
-      const data = await apiFetch("/api/redesign-preview", {
-        method: "POST",
-        body: form,
-      });
+      const data = await withTimeout(
+        apiFetch("/api/redesign-preview", {
+          method: "POST",
+          body: form,
+        })
+      );
 
       setRenderPreview(data);
 
@@ -252,8 +307,10 @@ async function analyze() {
         "Visual redesign instructions are ready. This preview does not spend Stability AI credits."
       );
     } catch (e) {
-      setError(e.message);
+      setError(e?.message || "ZYLO could not prepare the visual instructions. Please retry.");
+      setRetryAction("preview");
     } finally {
+      setAiLoading(false);
       setBusy("");
     }
   }
@@ -265,16 +322,20 @@ async function analyze() {
     }
 
     setBusy("Generating your room while preserving the original layout…");
+    setAiLoading(true);
+    setRetryAction("");
     setError("");
     setMsg("");
 
     try {
       const form = buildStructuredForm(true);
 
-      const data = await apiFetch("/api/redesign-room", {
-        method: "POST",
-        body: form,
-      });
+      const data = await withTimeout(
+        apiFetch("/api/redesign-room", {
+          method: "POST",
+          body: form,
+        })
+      );
 
       setGenerated(data.image);
       setVariations((current) => {
@@ -302,9 +363,20 @@ async function analyze() {
       } else {
         setError(message);
       }
+      setRetryAction("redesign");
     } finally {
+      setAiLoading(false);
       setBusy("");
     }
+  }
+
+  function retryLastAction() {
+    const action = retryAction;
+    setRetryAction("");
+
+    if (action === "analyze") analyze();
+    if (action === "preview") previewVisualPlan();
+    if (action === "redesign") redesign();
   }
 
   async function saveDesign() {
@@ -546,6 +618,44 @@ async function analyze() {
 
       {error && <div className="error">{error}</div>}
       {msg && <div className="notice">{msg}</div>}
+
+      {aiLoading && (
+        <div className="notice" role="status" aria-live="polite">
+          <div className="workspace-header" style={{ marginBottom: 10 }}>
+            <div>
+              <strong>
+                {loadingSeconds < 10
+                  ? "Waking up the AI server…"
+                  : loadingSeconds < 60
+                  ? busy
+                  : "The AI server is awake and still processing…"}
+              </strong>
+              <p className="muted" style={{ margin: "6px 0 0" }}>
+                The first request on the free server can take up to 60 seconds.
+                Please keep this page open and do not click again.
+              </p>
+            </div>
+            <span className="tag">{loadingSeconds}s</span>
+          </div>
+
+          <div className="progress" aria-label="AI request progress">
+            <span
+              style={{
+                width: `${loadingProgress}%`,
+                transition: "width 1s ease",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {retryAction && !actionBusy && (
+        <div className="actions" style={{ marginBottom: 18 }}>
+          <button className="btn" type="button" onClick={retryLastAction}>
+            Retry last request
+          </button>
+        </div>
+      )}
 
       <div className="two-col">
         <div className="card">
