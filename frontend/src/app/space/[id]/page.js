@@ -76,11 +76,19 @@ function SpaceWorkspace({ id }) {
   const [loadingSeconds, setLoadingSeconds] = useState(0);
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [retryAction, setRetryAction] = useState("");
+  const [planFeedbackRating, setPlanFeedbackRating] = useState("");
+  const [planFeedbackComment, setPlanFeedbackComment] = useState("");
+  const [feedbackSaving, setFeedbackSaving] = useState(false);
+  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
 
   async function load() {
     setError("");
 
-    const [{ data: s, error: se }, { data: d, error: de }] =
+    const [
+      { data: s, error: se },
+      { data: d, error: de },
+      { data: savedFeedback, error: feedbackLoadError },
+    ] =
       await Promise.all([
         supabase
           .from("spaces")
@@ -92,6 +100,12 @@ function SpaceWorkspace({ id }) {
           .select("*")
           .eq("space_id", id)
           .order("created_at", { ascending: false }),
+        supabase
+          .from("feedback")
+          .select("rating,comment")
+          .eq("space_id", id)
+          .eq("feedback_for", "design_plan")
+          .maybeSingle(),
       ]);
 
     if (se) {
@@ -104,7 +118,18 @@ function SpaceWorkspace({ id }) {
       return;
     }
 
+    if (feedbackLoadError) {
+      setError(feedbackLoadError.message);
+      return;
+    }
+
     setSpace(s);
+
+    if (savedFeedback) {
+      setPlanFeedbackRating(savedFeedback.rating || "");
+      setPlanFeedbackComment(savedFeedback.comment || "");
+      setFeedbackSubmitted(true);
+    }
 
     setTarget((current) =>
       current === "Modern"
@@ -377,6 +402,59 @@ async function analyze() {
     if (action === "analyze") analyze();
     if (action === "preview") previewVisualPlan();
     if (action === "redesign") redesign();
+  }
+
+  async function submitPlanFeedback(rating) {
+    setFeedbackSaving(true);
+    setError("");
+    setMsg("");
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const user = session?.user;
+
+      if (!user) {
+        throw new Error("Please log in again before submitting feedback.");
+      }
+
+      const payload = {
+        user_id: user.id,
+        space_id: id,
+        feedback_for: "design_plan",
+        rating,
+        comment:
+          rating === "incorrect"
+            ? planFeedbackComment.trim() || null
+            : null,
+        target_style: target,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: feedbackError } = await supabase
+        .from("feedback")
+        .upsert(payload, {
+          onConflict: "user_id,space_id,feedback_for",
+        });
+
+      if (feedbackError) {
+        throw feedbackError;
+      }
+
+      setPlanFeedbackRating(rating);
+      setFeedbackSubmitted(true);
+      setMsg(
+        rating === "correct"
+          ? "Thank you. You marked this design plan as correct."
+          : "Thank you. Your correction feedback was saved securely."
+      );
+    } catch (e) {
+      setError(e?.message || "Could not save feedback. Please try again.");
+    } finally {
+      setFeedbackSaving(false);
+    }
   }
 
   async function saveDesign() {
@@ -1068,6 +1146,74 @@ async function analyze() {
           <div className="divider" />
 
           <strong>{recs.tip}</strong>
+
+          <div className="divider" />
+
+          <div>
+            <div className="eyebrow">Help improve ZYLO</div>
+            <h3>Is this design plan correct and useful?</h3>
+            <p className="muted">
+              Your response helps measure real usefulness and improve future
+              recommendations.
+            </p>
+
+            <div className="actions">
+              <button
+                type="button"
+                className={
+                  planFeedbackRating === "correct"
+                    ? "btn"
+                    : "btn secondary"
+                }
+                onClick={() => submitPlanFeedback("correct")}
+                disabled={feedbackSaving || feedbackSubmitted}
+              >
+                ✅ Correct
+              </button>
+
+              <button
+                type="button"
+                className={
+                  planFeedbackRating === "incorrect"
+                    ? "btn"
+                    : "btn secondary"
+                }
+                onClick={() => setPlanFeedbackRating("incorrect")}
+                disabled={feedbackSaving || feedbackSubmitted}
+              >
+                ❌ Incorrect
+              </button>
+            </div>
+
+            {planFeedbackRating === "incorrect" && !feedbackSubmitted && (
+              <div className="field" style={{ marginTop: 16 }}>
+                <label>What should ZYLO improve? (optional)</label>
+                <textarea
+                  value={planFeedbackComment}
+                  onChange={(e) => setPlanFeedbackComment(e.target.value)}
+                  placeholder="Example: The furniture suggestion does not suit a balcony."
+                  disabled={feedbackSaving}
+                />
+
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => submitPlanFeedback("incorrect")}
+                  disabled={feedbackSaving}
+                  style={{ marginTop: 12 }}
+                >
+                  {feedbackSaving ? "Saving feedback…" : "Submit feedback"}
+                </button>
+              </div>
+            )}
+
+            {feedbackSubmitted && (
+              <p className="muted" style={{ marginTop: 14 }}>
+                Feedback submitted: <strong>{planFeedbackRating}</strong>.
+                Thank you for helping improve ZYLO.
+              </p>
+            )}
+          </div>
         </section>
       )}
 
